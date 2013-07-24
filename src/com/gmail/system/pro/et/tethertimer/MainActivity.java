@@ -1,7 +1,11 @@
 package com.gmail.system.pro.et.tethertimer;
 
+import java.util.Calendar;
+
 import android.app.Activity;
 import android.app.ActivityManager;
+import android.app.AlarmManager;
+import android.app.PendingIntent;
 import android.app.ActivityManager.RunningServiceInfo;
 import android.content.BroadcastReceiver;
 import android.content.Context;

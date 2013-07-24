@@ -4,6 +4,7 @@ import java.lang.reflect.Method;
 import java.util.Timer;
 import java.util.TimerTask;
 
+import android.app.AlarmManager;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -47,6 +48,7 @@ public class MainService extends Service{
 	static	WifiState State = WifiState.wakeup;			//Wifi接続状態
 	static	SharedPreferences sharedPref;				//プリファレンス
 	static boolean org_wifi_stat;						//起動時のWifi状態
+	public	static long target_time = 0;				//目標時刻
 
 	// ハンドラを生成
 	Handler handler;
@@ -57,7 +59,7 @@ public class MainService extends Service{
 	Method method1;
 	Method method2;
 	boolean	tether = false;
-	
+
     // スレッドの通知を受けるためのレシーバ
     private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
         @Override
@@ -69,10 +71,15 @@ public class MainService extends Service{
                 //停止を押したとき
                 if(intent.getStringExtra(MainActivity.INTENT_ACTION_TYPE).equals("STOP")){
                 	left_time = 1;
+                	target_time = System.currentTimeMillis() + left_time * 1000;
+                	cancelService();
                 }
                 //延長を押したとき
                 if(intent.getStringExtra(MainActivity.INTENT_ACTION_TYPE).equals("EXTEND")){
                 	left_time = TIMER_LEFT;
+                	target_time = System.currentTimeMillis() + left_time * 1000;
+                	cancelService();
+                    scheduleService();
                 }
                 //復帰時Wifiを変更したとき
                 if(intent.getStringExtra(MainActivity.INTENT_ACTION_TYPE).equals("ORG_CHANGE")){
@@ -133,8 +140,10 @@ public class MainService extends Service{
     	sharedPref = PreferenceManager.getDefaultSharedPreferences(this);
 		TIMER_LEFT = sharedPref.getInt("TIMER_LEFT", TIMER_LEFT);
 		left_time = TIMER_LEFT;
+    	target_time = System.currentTimeMillis() + left_time * 1000;
 		
 		getMethod();		
+        scheduleService();
 
     	org_wifi_stat = wifi.isWifiEnabled();
         Log.v(TAB, "org_wifi_stat="+org_wifi_stat);
@@ -207,7 +216,7 @@ public class MainService extends Service{
 	}
 
 	private void checkTimeUp(){
-		Log.v(TAB, "service checkTimeUp state="+State+" left_time="+left_time);
+		Log.v(TAB, "service checkTimeUp state="+State+" left_time="+left_time+" target_time="+target_time/1000+"now="+System.currentTimeMillis()/1000);
 
 		boolean	wifi_state = wifi.isWifiEnabled();
 		boolean	wifiAp_state = false;
@@ -222,7 +231,8 @@ public class MainService extends Service{
    	    }
 		
 		// ★★★　カウントダウン　★★★
-		left_time --;
+		left_time = (int)(target_time - System.currentTimeMillis())/1000;
+//		left_time --;
 
 		// WIFIがONの場合、OFFにする。　state 0→1（WIFI-OFF待機状態）
 		if((State == WifiState.wakeup) && (wifi_state)){
@@ -236,6 +246,7 @@ public class MainService extends Service{
 		}
 		// WIFI-OFF待機状態でWIFIがOFFになったらテザリングをONにする。　state 1→2（テザリング-ON待機状態）
 		if((State == WifiState.waitforWifiOff) && (wifi_state==false)){
+			Log.v(TAB, "waitforWifiOff");			
 			if(!tether){
 			try {
 					Log.v(TAB, "set WIFI-AP mode");
@@ -250,6 +261,7 @@ public class MainService extends Service{
 		}
 		// テザリング待機状態でテザリングがONになったらテザリングON状態にする。　state 2→3（テザリング-ON状態）
 		if(State == WifiState.waitforWifiApOn){
+			Log.v(TAB, "waitforWifiApOn");
     		if(wifiAp_state){
     			Log.v(TAB, "WifiAP-Enable!");
     			State = WifiState.normal;
@@ -257,16 +269,20 @@ public class MainService extends Service{
 		}
 		// テザリング状態でテザリングがOFFになったらWIFI-OFF待機状態にする。　state 3→1（WIFI-OFF待機状態）
 		if(State == WifiState.normal){
+			Log.v(TAB, "normal");			
     		if(!wifiAp_state){
 				Log.v(TAB, "WifiAP-Enable!");
 				State = WifiState.waitforWifiOff;
+				tether = false;
     		}
 		}
 		// タイムアップした場合、テザリングをOFFにする。　state 3→4（テザリング-OFF待機状態）
-		if(left_time == 0){
+		if((left_time <= 0) && (State != WifiState.timeUp)){
 			Log.v(TAB, "TimeUp!!");
+//			cancelService();
 			boolean toBeEnabled;
 			toBeEnabled = false;
+			tether = false;
 			try {
 				Log.v(TAB, "set WIFI-AP mode");
 				method2.invoke(wifi, null,toBeEnabled);
@@ -281,6 +297,7 @@ public class MainService extends Service{
 		}
 		// サービス終了迄は状態監視する。
 		if(left_time >= -10){
+			Log.v(TAB, "left_time");
             Intent intent = new Intent(INTENT_ACTION);
             intent.putExtra(INTENT_REMAIN, left_time);
             intent.putExtra(INTENT_TIMER_LEFT, TIMER_LEFT);            	
@@ -313,15 +330,17 @@ public class MainService extends Service{
             sendBroadcast(intent);
 		}
 		// タイムアップしてさらに5秒経過後にサービス（アクティビティも）を終了する。　state 4→5（アプリ終了状態）
-		if(left_time == -10){
+		if(left_time < -10){
 			Log.v(TAB, "service Stop!!");
 	        if(timer!=null){
 		        timer.cancel();
 		        timer = null;
 	        }
+			tether = false;
 			timer_status = false;
 	        State = WifiState.finish;
-			stopSelfResult(ServiceId);
+			boolean result = stopSelfResult(ServiceId);
+			Log.v(TAB, "stopSelfResult="+result);
 	        Toast.makeText(this, (String) getText(R.string.toast_service_stop), Toast.LENGTH_SHORT).show();
 			return;
 		}
@@ -329,7 +348,25 @@ public class MainService extends Service{
 
 	@Override
 	public IBinder onBind(Intent intent) {
+		Log.v(TAB, "onBind");
 		// TODO Auto-generated method stub
 		return null;
+	}
+
+	protected void scheduleService(){
+		Log.v(TAB, "★scheduleService state="+State+" target_time="+target_time+" now="+System.currentTimeMillis());
+		Context context = getBaseContext();
+		Intent intent = new Intent(context, MainService.class);
+		PendingIntent pendingIntent = PendingIntent.getService(context, -1, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+		AlarmManager alarmManager = (AlarmManager)context.getSystemService(ALARM_SERVICE);
+		alarmManager.set(AlarmManager.RTC_WAKEUP,target_time, pendingIntent);
+	}
+	protected void cancelService(){
+		Log.v(TAB, "★cancelService state="+State+" left_time="+left_time+" now="+System.currentTimeMillis());
+		Context context = getBaseContext();
+		Intent intent = new Intent(context, MainService.class);
+		PendingIntent pendingIntent = PendingIntent.getService(context, -1, intent,PendingIntent.FLAG_UPDATE_CURRENT);
+		AlarmManager alarmManager = (AlarmManager)context.getSystemService(ALARM_SERVICE);
+		alarmManager.cancel(pendingIntent);
 	}
 }
