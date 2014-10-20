@@ -349,7 +349,6 @@ public class MainService extends Service{
 	@Override
 	public IBinder onBind(Intent intent) {
 		Log.v(TAB, "onBind");
-		// TODO Auto-generated method stub
 		return null;
 	}
 
